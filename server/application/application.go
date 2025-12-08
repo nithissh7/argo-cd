@@ -1061,6 +1061,24 @@ func (s *Server) UpdateSpec(ctx context.Context, q *application.ApplicationUpdat
 	return &a.Spec, nil
 }
 
+// SetSyncPolicy sets the sync policy for an application
+func (s *Server) SetSyncPolicy(ctx context.Context, q *application.ApplicationSetSyncPolicyRequest) (*v1alpha1.Application, error) {
+	a, _, err := s.getApplicationEnforceRBACClient(ctx, rbac.ActionSetSyncPolicy, q.GetProject(), q.GetAppNamespace(), q.GetName(), "")
+	if err != nil {
+		return nil, err
+	}
+
+	a.Spec.SyncPolicy = q.GetSyncPolicy()
+
+	a, err = s.validateAndUpdateApp(ctx, a, false, true, rbac.ActionSetSyncPolicy, q.GetProject())
+	if err != nil {
+		return nil, fmt.Errorf("error updating sync policy: %w", err)
+	}
+
+	s.logAppEvent(ctx, a, argo.EventReasonResourceUpdated, "updated sync policy")
+	return a, nil
+}
+
 // Patch patches an application
 func (s *Server) Patch(ctx context.Context, q *application.ApplicationPatchRequest) (*v1alpha1.Application, error) {
 	app, _, err := s.getApplicationEnforceRBACClient(ctx, rbac.ActionGet, q.GetProject(), q.GetAppNamespace(), q.GetName(), "")

@@ -71,14 +71,15 @@ const (
 	ResourceExtensions        = "extensions"
 
 	// please add new items to Actions
-	ActionGet      = "get"
-	ActionCreate   = "create"
-	ActionUpdate   = "update"
-	ActionDelete   = "delete"
-	ActionSync     = "sync"
-	ActionOverride = "override"
-	ActionAction   = "action"
-	ActionInvoke   = "invoke"
+	ActionGet           = "get"
+	ActionCreate        = "create"
+	ActionUpdate        = "update"
+	ActionDelete        = "delete"
+	ActionSync          = "sync"
+	ActionOverride      = "override"
+	ActionAction        = "action"
+	ActionInvoke        = "invoke"
+	ActionSetSyncPolicy = "setsyncpolicy"
 )
 
 var (
@@ -106,6 +107,7 @@ var (
 		ActionOverride,
 		ActionAction,
 		ActionInvoke,
+		ActionSetSyncPolicy,
 	}
 )
 

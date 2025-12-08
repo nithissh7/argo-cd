@@ -1975,6 +1975,45 @@
         }
       }
     },
+    "/api/v1/applications/{name}/syncpolicy": {
+      "put": {
+        "tags": [
+          "ApplicationService"
+        ],
+        "summary": "SetSyncPolicy sets the sync policy for an application",
+        "operationId": "ApplicationService_SetSyncPolicy",
+        "parameters": [
+          {
+            "type": "string",
+            "name": "name",
+            "in": "path",
+            "required": true
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/applicationApplicationSetSyncPolicyRequest"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1alpha1Application"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        }
+      }
+    },
     "/api/v1/applications/{name}/syncwindows": {
       "get": {
         "tags": [
@@ -5016,6 +5055,24 @@
         },
         "prune": {
           "type": "boolean"
+        }
+      }
+    },
+    "applicationApplicationSetSyncPolicyRequest": {
+      "type": "object",
+      "title": "ApplicationSetSyncPolicyRequest is a request to set application sync policy",
+      "properties": {
+        "appNamespace": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "syncPolicy": {
+          "$ref": "#/definitions/v1alpha1SyncPolicy"
         }
       }
     },
@@ -10451,7 +10508,7 @@
           "type": "boolean",
           "title": "AllowEmpty allows apps have zero live resources (default: false)"
         },
-        "enable": {
+        "enabled": {
           "type": "boolean",
           "title": "Enable allows apps to explicitly control automated sync"
         },

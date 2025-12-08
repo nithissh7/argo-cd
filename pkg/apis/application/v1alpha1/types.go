@@ -1529,7 +1529,7 @@ type SyncPolicyAutomated struct {
 	// AllowEmpty allows apps have zero live resources (default: false)
 	AllowEmpty bool `json:"allowEmpty,omitempty" protobuf:"bytes,3,opt,name=allowEmpty"`
 	// Enable allows apps to explicitly control automated sync
-	Enabled *bool `json:"enabled,omitempty" protobuf:"bytes,4,opt,name=enable"`
+	Enabled *bool `json:"enabled,omitempty" protobuf:"bytes,4,opt,name=enabled"`
 }
 
 // SyncStrategy controls the manner in which a sync is performed
@@ -2563,13 +2563,14 @@ type ResourceActionParam struct {
 
 // TODO: refactor to use rbac.ActionGet, rbac.ActionCreate, without import cycle
 var validActions = map[string]bool{
-	"get":      true,
-	"create":   true,
-	"update":   true,
-	"delete":   true,
-	"sync":     true,
-	"override": true,
-	"*":        true,
+	"get":           true,
+	"create":        true,
+	"update":        true,
+	"delete":        true,
+	"sync":          true,
+	"override":      true,
+	"setsyncpolicy": true,
+	"*":             true,
 }
 
 var validActionPatterns = []*regexp.Regexp{

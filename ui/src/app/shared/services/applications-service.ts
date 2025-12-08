@@ -149,6 +149,13 @@ export class ApplicationsService {
             .then(res => this.parseAppFields(res.body));
     }
 
+    public setSyncPolicy(name: string, appNamespace: string, syncPolicy: models.SyncPolicy | null): Promise<models.Application> {
+        return requests
+            .put(`/applications/${name}/syncpolicy`)
+            .send({syncPolicy, appNamespace})
+            .then(res => this.parseAppFields(res.body));
+    }
+
     public create(app: models.Application): Promise<models.Application> {
         // Namespace may be specified in the app name. We need to parse and
         // handle it accordingly.

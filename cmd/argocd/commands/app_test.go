@@ -2184,6 +2184,10 @@ func (c *fakeAppServiceClient) UpdateSpec(_ context.Context, _ *applicationpkg.A
 	return nil, nil
 }
 
+func (c *fakeAppServiceClient) SetSyncPolicy(_ context.Context, _ *applicationpkg.ApplicationSetSyncPolicyRequest, _ ...grpc.CallOption) (*v1alpha1.Application, error) {
+	return nil, nil
+}
+
 func (c *fakeAppServiceClient) Patch(_ context.Context, _ *applicationpkg.ApplicationPatchRequest, _ ...grpc.CallOption) (*v1alpha1.Application, error) {
 	return nil, nil
 }

@@ -1,5 +1,5 @@
 /* eslint-disable no-prototype-builtins */
-import {AutocompleteField, Checkbox, DropDownMenu, ErrorNotification, FormField, FormSelect, HelpIcon, NotificationType} from 'argo-ui';
+import {AutocompleteField, DropDownMenu, ErrorNotification, FormField, FormSelect, HelpIcon, NotificationType} from 'argo-ui';
 import * as React from 'react';
 import {FormApi, Text} from 'react-form';
 import {
@@ -374,40 +374,20 @@ export const ApplicationSummary = (props: ApplicationSummaryProps) => {
         });
     }
 
-    async function setAutoSync(ctx: ContextApis, confirmationTitle: string, confirmationText: string, prune: boolean, selfHeal: boolean, enable: boolean) {
+    async function setAutoSync(ctx: ContextApis, confirmationTitle: string, confirmationText: string, patch: {prune?: boolean; selfHeal?: boolean; enabled?: boolean}) {
         const confirmed = await ctx.popup.confirm(confirmationTitle, confirmationText);
         if (confirmed) {
             try {
                 setChangeSync(true);
-                const updatedApp = JSON.parse(JSON.stringify(props.app)) as models.Application;
-                if (!updatedApp.spec.syncPolicy) {
-                    updatedApp.spec.syncPolicy = {};
-                }
-
-                updatedApp.spec.syncPolicy.automated = {prune, selfHeal, enabled: enable};
-                await updateApp(updatedApp, {validate: false});
+                const automated = props.app.spec.syncPolicy?.automated || {};
+                const syncPolicy: models.SyncPolicy = {
+                    ...(props.app.spec.syncPolicy || {}),
+                    automated: {...automated, ...patch}
+                };
+                await services.applications.setSyncPolicy(props.app.metadata.name, props.app.metadata.namespace, syncPolicy);
             } catch (e) {
                 ctx.notifications.show({
                     content: <ErrorNotification title={`Unable to "${confirmationTitle.replace(/\?/g, '')}:`} e={e} />,
-                    type: NotificationType.Error
-                });
-            } finally {
-                setChangeSync(false);
-            }
-        }
-    }
-
-    async function unsetAutoSync(ctx: ContextApis) {
-        const confirmed = await ctx.popup.confirm('Disable Auto-Sync?', 'Are you sure you want to disable automated application synchronization');
-        if (confirmed) {
-            try {
-                setChangeSync(true);
-                const updatedApp = JSON.parse(JSON.stringify(props.app)) as models.Application;
-                updatedApp.spec.syncPolicy.automated = null;
-                await updateApp(updatedApp, {validate: false});
-            } catch (e) {
-                ctx.notifications.show({
-                    content: <ErrorNotification title='Unable to disable Auto-Sync' e={e} />,
                     type: NotificationType.Error
                 });
             } finally {
@@ -510,19 +490,17 @@ export const ApplicationSummary = (props: ApplicationSummaryProps) => {
                         <div className='white-box__details'>
                             <p>SYNC POLICY</p>
                             <div className='row white-box__details-row'>
-                                <div className='columns small-3'>{(app.spec.syncPolicy && app.spec.syncPolicy.automated && <span>AUTOMATED</span>) || <span>NONE</span>}</div>
+                                <div className='columns small-3'>{(app.spec.syncPolicy && app.spec.syncPolicy.automated && app.spec.syncPolicy.automated.enabled !== false && <span>AUTOMATED</span>) || <span>MANUAL</span>}</div>
                                 <div className='columns small-9'>
-                                    {(app.spec.syncPolicy && app.spec.syncPolicy.automated && (
-                                        <button className='argo-button argo-button--base' onClick={() => unsetAutoSync(ctx)}>
+                                    {(app.spec.syncPolicy && app.spec.syncPolicy.automated && app.spec.syncPolicy.automated.enabled !== false && (
+                                        <button className='argo-button argo-button--base' onClick={() => setAutoSync(ctx, 'Disable Auto-Sync?', 'Are you sure you want to disable automated application synchronization', {enabled: false})}>
                                             <Spinner show={changeSync} style={{marginRight: '5px'}} />
                                             Disable Auto-Sync
                                         </button>
                                     )) || (
                                         <button
                                             className='argo-button argo-button--base'
-                                            onClick={() =>
-                                                setAutoSync(ctx, 'Enable Auto-Sync?', 'Are you sure you want to enable automated application synchronization?', false, false, true)
-                                            }>
+                                            onClick={() => setAutoSync(ctx, 'Enable Auto-Sync?', 'Are you sure you want to enable automated application synchronization?', {enabled: true})}>
                                             <Spinner show={changeSync} style={{marginRight: '5px'}} />
                                             Enable Auto-Sync
                                         </button>
@@ -532,30 +510,6 @@ export const ApplicationSummary = (props: ApplicationSummaryProps) => {
 
                             {app.spec.syncPolicy && app.spec.syncPolicy.automated && (
                                 <React.Fragment>
-                                    <div className='row white-box__details-row'>
-                                        <div className='columns small-12'>
-                                            <div className='checkbox-container'>
-                                                <Checkbox
-                                                    onChange={async (val: boolean) => {
-                                                        setAutoSync(
-                                                            ctx,
-                                                            val ? 'Enable Auto-Sync?' : 'Disable Auto-Sync?',
-                                                            val
-                                                                ? 'If checked, application will automatically sync when changes are detected'
-                                                                : 'Are you sure you want to disable automated application synchronization',
-                                                            app.spec.syncPolicy.automated.prune,
-                                                            app.spec.syncPolicy.automated.selfHeal,
-                                                            val
-                                                        );
-                                                    }}
-                                                    checked={app.spec.syncPolicy?.automated ? app.spec.syncPolicy.automated.enabled !== false : false}
-                                                    id='enable-auto-sync'
-                                                />
-                                                <label htmlFor='enable-auto-sync'>ENABLE AUTO-SYNC</label>
-                                                <HelpIcon title='If checked, application will automatically sync when changes are detected' />
-                                            </div>
-                                        </div>
-                                    </div>
                                     <div className='row white-box__details-row'>
                                         <div className='columns small-3'>PRUNE RESOURCES</div>
                                         <div className='columns small-9'>
@@ -567,9 +521,7 @@ export const ApplicationSummary = (props: ApplicationSummaryProps) => {
                                                             ctx,
                                                             'Disable Prune Resources?',
                                                             'Are you sure you want to disable resource pruning during automated application synchronization?',
-                                                            false,
-                                                            app.spec.syncPolicy.automated.selfHeal,
-                                                            app.spec.syncPolicy.automated.enabled
+                                                            {prune: false}
                                                         )
                                                     }>
                                                     Disable
@@ -582,9 +534,7 @@ export const ApplicationSummary = (props: ApplicationSummaryProps) => {
                                                             ctx,
                                                             'Enable Prune Resources?',
                                                             'Are you sure you want to enable resource pruning during automated application synchronization?',
-                                                            true,
-                                                            app.spec.syncPolicy.automated.selfHeal,
-                                                            app.spec.syncPolicy.automated.enabled
+                                                            {prune: true}
                                                         )
                                                     }>
                                                     Enable
@@ -603,9 +553,7 @@ export const ApplicationSummary = (props: ApplicationSummaryProps) => {
                                                             ctx,
                                                             'Disable Self Heal?',
                                                             'Are you sure you want to disable automated self healing?',
-                                                            app.spec.syncPolicy.automated.prune,
-                                                            false,
-                                                            app.spec.syncPolicy.automated.enabled
+                                                            {selfHeal: false}
                                                         )
                                                     }>
                                                     Disable
@@ -618,9 +566,7 @@ export const ApplicationSummary = (props: ApplicationSummaryProps) => {
                                                             ctx,
                                                             'Enable Self Heal?',
                                                             'Are you sure you want to enable automated self healing?',
-                                                            app.spec.syncPolicy.automated.prune,
-                                                            true,
-                                                            app.spec.syncPolicy.automated.enabled
+                                                            {selfHeal: true}
                                                         )
                                                     }>
                                                     Enable

@@ -148,6 +148,14 @@ message ApplicationUpdateSpecRequest {
 	optional string project = 5;
 }
 
+// ApplicationSetSyncPolicyRequest is a request to set application sync policy
+message ApplicationSetSyncPolicyRequest {
+	required string name = 1;
+	optional github.com.argoproj.argo_cd.v3.pkg.apis.application.v1alpha1.SyncPolicy syncPolicy = 2;
+	optional string appNamespace = 3;
+	optional string project = 4;
+}
+
 // ApplicationPatchRequest is a request to patch an application
 message ApplicationPatchRequest {
 	required string name = 1;
@@ -413,6 +421,14 @@ service ApplicationService {
 		option (google.api.http) = {
 			put: "/api/v1/applications/{name}/spec"
 			body: "spec"
+		};
+	}
+
+	// SetSyncPolicy sets the sync policy for an application
+	rpc SetSyncPolicy(ApplicationSetSyncPolicyRequest) returns (github.com.argoproj.argo_cd.v3.pkg.apis.application.v1alpha1.Application) {
+		option (google.api.http) = {
+			put: "/api/v1/applications/{name}/syncpolicy"
+			body: "*"
 		};
 	}
 
