@@ -63,6 +63,7 @@ type Server struct {
 	AllowedScmProviders      []string
 	EnableScmProviders       bool
 	EnableGitHubAPIMetrics   bool
+	AllowTemplatedProject    bool
 }
 
 // NewServer returns a new instance of the ApplicationSet service
@@ -85,6 +86,7 @@ func NewServer(
 	allowedScmProviders []string,
 	enableScmProviders bool,
 	enableGitHubAPIMetrics bool,
+	allowTemplatedProject bool,
 	enableK8sEvent []string,
 ) applicationset.ApplicationSetServiceServer {
 	s := &Server{
@@ -107,6 +109,7 @@ func NewServer(
 		AllowedScmProviders:      allowedScmProviders,
 		EnableScmProviders:       enableScmProviders,
 		EnableGitHubAPIMetrics:   enableGitHubAPIMetrics,
+		AllowTemplatedProject:    allowTemplatedProject,
 	}
 	return s
 }
@@ -203,6 +206,12 @@ func (s *Server) Create(ctx context.Context, q *applicationset.ApplicationSetCre
 		apps, err := s.generateApplicationSetApps(ctx, log.WithField("applicationset", appset.Name), *appset)
 		if err != nil {
 			return nil, fmt.Errorf("unable to generate Applications of ApplicationSet: %w", err)
+		}
+
+		// Validate that all generated applications reference existing projects and user has permissions
+		projectWasTemplated := strings.Contains(projectName, "{{")
+		if err := s.validateGeneratedApplications(ctx, appset, apps, projectWasTemplated); err != nil {
+			return nil, err
 		}
 
 		statusMap := appsetstatus.GetResourceStatusMap(appset)
@@ -397,6 +406,13 @@ func (s *Server) Generate(ctx context.Context, q *applicationset.ApplicationSetG
 	if err != nil {
 		return nil, fmt.Errorf("unable to generate Applications of ApplicationSet: %w\n%s", err, logs.String())
 	}
+
+	// Validate that all generated applications reference existing projects and user has permissions
+	projectWasTemplated := strings.Contains(projectName, "{{")
+	if err := s.validateGeneratedApplications(ctx, appset, apps, projectWasTemplated); err != nil {
+		return nil, err
+	}
+
 	res := &applicationset.ApplicationSetGenerateResponse{}
 	for i := range apps {
 		res.Applications = append(res.Applications, &apps[i])
@@ -438,7 +454,7 @@ func (s *Server) validateAppSet(appset *v1alpha1.ApplicationSet) (string, error)
 
 	projectName := appset.Spec.Template.Spec.Project
 
-	if strings.Contains(projectName, "{{") {
+	if strings.Contains(projectName, "{{") && !s.AllowTemplatedProject {
 		return "", errors.New("the Argo CD API does not currently support creating ApplicationSets with templated `project` fields")
 	}
 
@@ -454,12 +470,65 @@ func (s *Server) checkCreatePermissions(ctx context.Context, appset *v1alpha1.Ap
 		return err
 	}
 
+	// Skip project existence check if the project name is templated and allowed.
+	// The actual project validation will happen when individual Applications are created.
+	if strings.Contains(projectName, "{{") && s.AllowTemplatedProject {
+		return nil
+	}
+
 	_, err := s.appclientset.ArgoprojV1alpha1().AppProjects(s.ns).Get(ctx, projectName, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return status.Errorf(codes.InvalidArgument, "ApplicationSet references project %s which does not exist", projectName)
 		}
 		return fmt.Errorf("error getting ApplicationSet's project %q: %w", projectName, err)
+	}
+
+	return nil
+}
+
+// validateGeneratedApplications checks that all generated applications reference valid projects
+// and that the user has permission to create applications in those projects.
+// This is called after template rendering when the project field was templated.
+// If projectWasTemplated is false, validation is skipped since checkCreatePermissions already validated.
+func (s *Server) validateGeneratedApplications(ctx context.Context, appset *v1alpha1.ApplicationSet, apps []v1alpha1.Application, projectWasTemplated bool) error {
+	if !projectWasTemplated {
+		// Project was already validated in checkCreatePermissions
+		return nil
+	}
+
+	// Use a map to avoid checking the same project multiple times
+	checkedProjects := make(map[string]bool)
+
+	for _, app := range apps {
+		projectName := app.Spec.Project
+		if projectName == "" {
+			continue
+		}
+
+		// Skip if we already validated this project
+		if checkedProjects[projectName] {
+			continue
+		}
+
+		// Check that the project exists
+		_, err := s.appclientset.ArgoprojV1alpha1().AppProjects(s.ns).Get(ctx, projectName, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return status.Errorf(codes.InvalidArgument, "generated application %q references project %q which does not exist", app.Name, projectName)
+			}
+			return fmt.Errorf("error getting project %q for generated application %q: %w", projectName, app.Name, err)
+		}
+
+		// Check that the user has permission to create ApplicationSets in this project
+		// We create a temporary copy of the appset with the rendered project to check RBAC
+		appsetForRBAC := appset.DeepCopy()
+		appsetForRBAC.Spec.Template.Spec.Project = projectName
+		if err := s.enf.EnforceErr(ctx.Value("claims"), rbac.ResourceApplicationSets, rbac.ActionCreate, appsetForRBAC.RBACName(s.ns)); err != nil {
+			return status.Errorf(codes.PermissionDenied, "permission denied to create applications in project %q: %v", projectName, err)
+		}
+
+		checkedProjects[projectName] = true
 	}
 
 	return nil

@@ -248,6 +248,7 @@ type ApplicationSetOpts struct {
 	AllowedScmProviders      []string
 	EnableScmProviders       bool
 	EnableGitHubAPIMetrics   bool
+	AllowTemplatedProject    bool
 }
 
 // GracefulRestartSignal implements a signal to be used for a graceful restart trigger.
@@ -1057,6 +1058,7 @@ func newArgoCDServiceSet(a *ArgoCDServer) *ArgoCDServiceSet {
 		a.AllowedScmProviders,
 		a.EnableScmProviders,
 		a.EnableGitHubAPIMetrics,
+		a.AllowTemplatedProject,
 		a.EnableK8sEvent,
 	)
 
