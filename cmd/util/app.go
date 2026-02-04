@@ -233,17 +233,17 @@ func SetAppSpecOptions(flags *pflag.FlagSet, spec *argoappv1.ApplicationSpec, ap
 		case "sync-policy":
 			switch appOpts.syncPolicy {
 			case "none", "manual":
-				if spec.SyncPolicy != nil {
-					spec.SyncPolicy.Automated = nil
-				}
-				if spec.SyncPolicy.IsZero() {
-					spec.SyncPolicy = nil
+				if spec.SyncPolicy != nil && spec.SyncPolicy.Automated != nil {
+					spec.SyncPolicy.Automated.Enabled = ptr.To(false)
 				}
 			case "automated", "automatic", "auto":
 				if spec.SyncPolicy == nil {
 					spec.SyncPolicy = &argoappv1.SyncPolicy{}
 				}
-				spec.SyncPolicy.Automated = &argoappv1.SyncPolicyAutomated{}
+				if spec.SyncPolicy.Automated == nil {
+					spec.SyncPolicy.Automated = &argoappv1.SyncPolicyAutomated{}
+				}
+				spec.SyncPolicy.Automated.Enabled = ptr.To(true)
 			default:
 				log.Fatalf("Invalid sync-policy: %s", appOpts.syncPolicy)
 			}
@@ -308,6 +308,33 @@ func SetAppSpecOptions(flags *pflag.FlagSet, spec *argoappv1.ApplicationSpec, ap
 	}
 
 	return visited
+}
+
+// syncPolicyFlags is the set of flags that only affect the sync policy.
+var syncPolicyFlags = map[string]bool{
+	"sync-policy":      true,
+	"sync-option":      true,
+	"sync-retry-limit": true,
+	"auto-prune":       true,
+	"self-heal":        true,
+	"allow-empty":      true,
+}
+
+// IsSyncPolicyOnlyChange returns true if all changed flags are sync-policy related.
+func IsSyncPolicyOnlyChange(flags *pflag.FlagSet) bool {
+	if flags == nil {
+		return false
+	}
+	hasSyncPolicyFlag := false
+	allSyncPolicy := true
+	flags.Visit(func(f *pflag.Flag) {
+		if syncPolicyFlags[f.Name] {
+			hasSyncPolicyFlag = true
+		} else {
+			allSyncPolicy = false
+		}
+	})
+	return hasSyncPolicyFlag && allSyncPolicy
 }
 
 type kustomizeOpts struct {
