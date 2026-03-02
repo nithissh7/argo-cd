@@ -917,12 +917,20 @@ func NewApplicationSetCommand(clientOpts *argocdclient.ClientOptions) *cobra.Com
 			}
 
 			setParameterOverrides(app, appOpts.Parameters, sourcePosition)
-			_, err = appIf.UpdateSpec(ctx, &application.ApplicationUpdateSpecRequest{
-				Name:         &app.Name,
-				Spec:         &app.Spec,
-				Validate:     &appOpts.Validate,
-				AppNamespace: &appNs,
-			})
+			if cmdutil.IsSyncPolicyOnlyChange(c.Flags()) {
+				_, err = appIf.SetSyncPolicy(ctx, &application.ApplicationSetSyncPolicyRequest{
+					Name:         &app.Name,
+					SyncPolicy:   app.Spec.SyncPolicy,
+					AppNamespace: &appNs,
+				})
+			} else {
+				_, err = appIf.UpdateSpec(ctx, &application.ApplicationUpdateSpecRequest{
+					Name:         &app.Name,
+					Spec:         &app.Spec,
+					Validate:     &appOpts.Validate,
+					AppNamespace: &appNs,
+				})
+			}
 			errors.CheckError(err)
 		},
 	}

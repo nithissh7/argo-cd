@@ -247,17 +247,24 @@ func Test_setAppSpecOptions(t *testing.T) {
 	t.Run("SyncPolicy", func(t *testing.T) {
 		require.NoError(t, f.SetFlag("sync-policy", "automated"))
 		assert.NotNil(t, f.spec.SyncPolicy.Automated)
+		assert.True(t, *f.spec.SyncPolicy.Automated.Enabled)
 
 		f.spec.SyncPolicy = nil
 		require.NoError(t, f.SetFlag("sync-policy", "automatic"))
 		assert.NotNil(t, f.spec.SyncPolicy.Automated)
+		assert.True(t, *f.spec.SyncPolicy.Automated.Enabled)
 
 		f.spec.SyncPolicy = nil
 		require.NoError(t, f.SetFlag("sync-policy", "auto"))
 		assert.NotNil(t, f.spec.SyncPolicy.Automated)
+		assert.True(t, *f.spec.SyncPolicy.Automated.Enabled)
 
 		require.NoError(t, f.SetFlag("sync-policy", "none"))
-		assert.Nil(t, f.spec.SyncPolicy)
+		assert.NotNil(t, f.spec.SyncPolicy.Automated)
+		assert.False(t, *f.spec.SyncPolicy.Automated.Enabled)
+
+		// reset for next subtests
+		f.spec.SyncPolicy = nil
 	})
 	t.Run("SyncOptions", func(t *testing.T) {
 		require.NoError(t, f.SetFlag("sync-option", "a=1"))
