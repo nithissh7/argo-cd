@@ -177,6 +177,7 @@ func newTestAppSetServerWithEnforcerConfigure(t *testing.T, f func(*rbac.Enforce
 		[]string{},
 		true,
 		true,
+		false, // allowTemplatedProject - disabled by default
 		testEnableEventList,
 	)
 	return server.(*Server)
@@ -363,14 +364,289 @@ func TestCreateAppSet(t *testing.T) {
 }
 
 func TestCreateAppSetTemplatedProject(t *testing.T) {
-	testAppSet := newTestAppSet()
-	appServer := newTestAppSetServer(t)
-	testAppSet.Spec.Template.Spec.Project = "{{ .project }}"
-	createReq := applicationset.ApplicationSetCreateRequest{
-		Applicationset: testAppSet,
-	}
-	_, err := appServer.Create(t.Context(), &createReq)
-	assert.EqualError(t, err, "error validating ApplicationSets: the Argo CD API does not currently support creating ApplicationSets with templated `project` fields")
+	t.Run("Rejected by default", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		testAppSet.Spec.Template.Spec.Project = "{{project}}"
+		createReq := applicationset.ApplicationSetCreateRequest{
+			Applicationset: testAppSet,
+		}
+		_, err := appServer.Create(t.Context(), &createReq)
+		assert.EqualError(t, err, "error validating ApplicationSets: the Argo CD API does not currently support creating ApplicationSets with templated `project` fields")
+	})
+
+	t.Run("Allowed when flag is enabled - create without dry run", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		appServer.AllowTemplatedProject = true
+		testAppSet.Spec.Template.Spec.Project = "{{project}}"
+		testAppSet.Spec.Generators = []appsv1.ApplicationSetGenerator{
+			{
+				List: &appsv1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{{Raw: []byte(`{"project": "default"}`)}},
+				},
+			},
+		}
+		createReq := applicationset.ApplicationSetCreateRequest{
+			Applicationset: testAppSet,
+		}
+		_, err := appServer.Create(t.Context(), &createReq)
+		require.NoError(t, err)
+	})
+
+	t.Run("Dry run with existing project - succeeds and renders correctly", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		appServer.AllowTemplatedProject = true
+		testAppSet.Spec.Template.Name = "app-{{name}}"
+		testAppSet.Spec.Template.Spec.Project = "{{project}}"
+		testAppSet.Spec.Generators = []appsv1.ApplicationSetGenerator{
+			{
+				List: &appsv1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{
+						{Raw: []byte(`{"name": "one", "project": "default"}`)},
+						{Raw: []byte(`{"name": "two", "project": "my-proj"}`)},
+					},
+				},
+			},
+		}
+		createReq := applicationset.ApplicationSetCreateRequest{
+			Applicationset: testAppSet,
+			DryRun:         true,
+		}
+		result, err := appServer.Create(t.Context(), &createReq)
+		require.NoError(t, err)
+		require.Len(t, result.Status.Resources, 2)
+
+		// Sort by name to ensure consistent ordering
+		sort.Slice(result.Status.Resources, func(i, j int) bool {
+			return result.Status.Resources[i].Name < result.Status.Resources[j].Name
+		})
+
+		assert.Equal(t, "app-one", result.Status.Resources[0].Name)
+		assert.Equal(t, "app-two", result.Status.Resources[1].Name)
+	})
+
+	t.Run("Dry run with non-existent project - fails validation", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		appServer.AllowTemplatedProject = true
+		testAppSet.Spec.Template.Name = "app-{{name}}"
+		testAppSet.Spec.Template.Spec.Project = "{{project}}"
+		testAppSet.Spec.Generators = []appsv1.ApplicationSetGenerator{
+			{
+				List: &appsv1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{
+						{Raw: []byte(`{"name": "one", "project": "non-existent-project"}`)}},
+				},
+			},
+		}
+		createReq := applicationset.ApplicationSetCreateRequest{
+			Applicationset: testAppSet,
+			DryRun:         true,
+		}
+		_, err := appServer.Create(t.Context(), &createReq)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "non-existent-project")
+		assert.Contains(t, err.Error(), "does not exist")
+	})
+}
+
+func TestGenerateAppSetTemplatedProject(t *testing.T) {
+	t.Run("Generate with existing projects - succeeds and renders correctly", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		appServer.AllowTemplatedProject = true
+		testAppSet.Spec.Template.Name = "app-{{name}}"
+		testAppSet.Spec.Template.Spec.Project = "{{project}}"
+		testAppSet.Spec.Generators = []appsv1.ApplicationSetGenerator{
+			{
+				List: &appsv1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{
+						{Raw: []byte(`{"name": "one", "project": "default"}`)},
+						{Raw: []byte(`{"name": "two", "project": "my-proj"}`)},
+					},
+				},
+			},
+		}
+
+		res, err := appServer.Generate(t.Context(), &applicationset.ApplicationSetGenerateRequest{
+			ApplicationSet: testAppSet,
+		})
+		require.NoError(t, err)
+		require.Len(t, res.Applications, 2)
+
+		// Sort by name to ensure consistent ordering
+		sort.Slice(res.Applications, func(i, j int) bool {
+			return res.Applications[i].Name < res.Applications[j].Name
+		})
+
+		// Verify the project fields are correctly rendered
+		assert.Equal(t, "app-one", res.Applications[0].Name)
+		assert.Equal(t, "default", res.Applications[0].Spec.Project)
+		assert.Equal(t, "app-two", res.Applications[1].Name)
+		assert.Equal(t, "my-proj", res.Applications[1].Spec.Project)
+	})
+
+	t.Run("Generate with non-existent project - fails validation", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		appServer.AllowTemplatedProject = true
+		testAppSet.Spec.Template.Name = "app-{{name}}"
+		testAppSet.Spec.Template.Spec.Project = "{{project}}"
+		testAppSet.Spec.Generators = []appsv1.ApplicationSetGenerator{
+			{
+				List: &appsv1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{
+						{Raw: []byte(`{"name": "one", "project": "does-not-exist"}`)},
+					},
+				},
+			},
+		}
+
+		_, err := appServer.Generate(t.Context(), &applicationset.ApplicationSetGenerateRequest{
+			ApplicationSet: testAppSet,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "does-not-exist")
+		assert.Contains(t, err.Error(), "does not exist")
+	})
+
+	t.Run("Generate with mixed valid and invalid projects - fails on first invalid", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		appServer.AllowTemplatedProject = true
+		testAppSet.Spec.Template.Name = "app-{{name}}"
+		testAppSet.Spec.Template.Spec.Project = "{{project}}"
+		testAppSet.Spec.Generators = []appsv1.ApplicationSetGenerator{
+			{
+				List: &appsv1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{
+						{Raw: []byte(`{"name": "valid", "project": "default"}`)},
+						{Raw: []byte(`{"name": "invalid", "project": "no-such-project"}`)},
+					},
+				},
+			},
+		}
+
+		_, err := appServer.Generate(t.Context(), &applicationset.ApplicationSetGenerateRequest{
+			ApplicationSet: testAppSet,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no-such-project")
+		assert.Contains(t, err.Error(), "does not exist")
+	})
+
+	t.Run("Generate without flag - rejected", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		// Flag NOT enabled
+		testAppSet.Spec.Template.Spec.Project = "{{project}}"
+		testAppSet.Spec.Generators = []appsv1.ApplicationSetGenerator{
+			{
+				List: &appsv1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{
+						{Raw: []byte(`{"project": "default"}`)},
+					},
+				},
+			},
+		}
+
+		_, err := appServer.Generate(t.Context(), &applicationset.ApplicationSetGenerateRequest{
+			ApplicationSet: testAppSet,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "does not currently support creating ApplicationSets with templated `project` fields")
+	})
+}
+
+func TestGenerateAppSetTemplatedProjectGoTemplate(t *testing.T) {
+	t.Run("Generate with Go template syntax - succeeds and renders correctly", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		appServer.AllowTemplatedProject = true
+		testAppSet.Spec.GoTemplate = true
+		testAppSet.Spec.Template.Name = "app-{{.name}}"
+		testAppSet.Spec.Template.Spec.Project = "{{.project}}"
+		testAppSet.Spec.Generators = []appsv1.ApplicationSetGenerator{
+			{
+				List: &appsv1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{
+						{Raw: []byte(`{"name": "one", "project": "default"}`)},
+						{Raw: []byte(`{"name": "two", "project": "my-proj"}`)},
+					},
+				},
+			},
+		}
+
+		res, err := appServer.Generate(t.Context(), &applicationset.ApplicationSetGenerateRequest{
+			ApplicationSet: testAppSet,
+		})
+		require.NoError(t, err)
+		require.Len(t, res.Applications, 2)
+
+		// Sort by name to ensure consistent ordering
+		sort.Slice(res.Applications, func(i, j int) bool {
+			return res.Applications[i].Name < res.Applications[j].Name
+		})
+
+		// Verify the project fields are correctly rendered
+		assert.Equal(t, "app-one", res.Applications[0].Name)
+		assert.Equal(t, "default", res.Applications[0].Spec.Project)
+		assert.Equal(t, "app-two", res.Applications[1].Name)
+		assert.Equal(t, "my-proj", res.Applications[1].Spec.Project)
+	})
+
+	t.Run("Dry run with Go template syntax - succeeds", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		appServer.AllowTemplatedProject = true
+		testAppSet.Spec.GoTemplate = true
+		testAppSet.Spec.Template.Name = "app-{{.name}}"
+		testAppSet.Spec.Template.Spec.Project = "{{.project}}"
+		testAppSet.Spec.Generators = []appsv1.ApplicationSetGenerator{
+			{
+				List: &appsv1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{
+						{Raw: []byte(`{"name": "one", "project": "default"}`)},
+					},
+				},
+			},
+		}
+		createReq := applicationset.ApplicationSetCreateRequest{
+			Applicationset: testAppSet,
+			DryRun:         true,
+		}
+		result, err := appServer.Create(t.Context(), &createReq)
+		require.NoError(t, err)
+		require.Len(t, result.Status.Resources, 1)
+		assert.Equal(t, "app-one", result.Status.Resources[0].Name)
+	})
+
+	t.Run("Go template with non-existent project - fails validation", func(t *testing.T) {
+		testAppSet := newTestAppSet()
+		appServer := newTestAppSetServer(t)
+		appServer.AllowTemplatedProject = true
+		testAppSet.Spec.GoTemplate = true
+		testAppSet.Spec.Template.Name = "app-{{.name}}"
+		testAppSet.Spec.Template.Spec.Project = "{{.project}}"
+		testAppSet.Spec.Generators = []appsv1.ApplicationSetGenerator{
+			{
+				List: &appsv1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{
+						{Raw: []byte(`{"name": "one", "project": "nonexistent"}`)},
+					},
+				},
+			},
+		}
+
+		_, err := appServer.Generate(t.Context(), &applicationset.ApplicationSetGenerateRequest{
+			ApplicationSet: testAppSet,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nonexistent")
+		assert.Contains(t, err.Error(), "does not exist")
+	})
 }
 
 func TestCreateAppSetWrongNamespace(t *testing.T) {
