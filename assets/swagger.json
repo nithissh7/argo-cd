@@ -2030,6 +2030,55 @@
         }
       }
     },
+    "/api/v1/applications/{name}/syncpolicy": {
+      "put": {
+        "tags": [
+          "ApplicationService"
+        ],
+        "summary": "SetSyncPolicy sets the sync policy of an application",
+        "operationId": "ApplicationService_SetSyncPolicy",
+        "parameters": [
+          {
+            "type": "string",
+            "name": "name",
+            "in": "path",
+            "required": true
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1alpha1SyncPolicy"
+            }
+          },
+          {
+            "type": "string",
+            "name": "appNamespace",
+            "in": "query"
+          },
+          {
+            "type": "string",
+            "name": "project",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1alpha1ApplicationSpec"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        }
+      }
+    },
     "/api/v1/applications/{name}/syncwindows": {
       "get": {
         "tags": [

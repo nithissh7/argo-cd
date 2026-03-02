@@ -164,6 +164,14 @@ export class ApplicationsService {
             .then(res => res.body as models.ApplicationSpec);
     }
 
+    public setSyncPolicy(name: string, appNamespace: string, syncPolicy: models.SyncPolicy): Promise<models.ApplicationSpec> {
+        return requests
+            .put(`/applications/${name}/syncpolicy`)
+            .query({appNamespace})
+            .send(syncPolicy)
+            .then(res => res.body as models.ApplicationSpec);
+    }
+
     public update(app: models.AbstractApplication, query: {validate?: boolean} = {}): Promise<models.AbstractApplication> {
         const isAnApp = isApp(app);
         return requests

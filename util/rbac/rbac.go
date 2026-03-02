@@ -77,8 +77,9 @@ const (
 	ActionDelete   = "delete"
 	ActionSync     = "sync"
 	ActionOverride = "override"
-	ActionAction   = "action"
-	ActionInvoke   = "invoke"
+	ActionAction        = "action"
+	ActionInvoke        = "invoke"
+	ActionSetSyncPolicy = "setsyncpolicy"
 )
 
 var (
@@ -106,6 +107,7 @@ var (
 		ActionOverride,
 		ActionAction,
 		ActionInvoke,
+		ActionSetSyncPolicy,
 	}
 )
 

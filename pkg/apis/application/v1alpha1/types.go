@@ -2602,13 +2602,14 @@ type ResourceActionParam struct {
 }
 
 var validActions = map[string]bool{
-	rbac.ActionGet:      true,
-	rbac.ActionCreate:   true,
-	rbac.ActionUpdate:   true,
-	rbac.ActionDelete:   true,
-	rbac.ActionSync:     true,
-	rbac.ActionOverride: true,
-	"*":                 true,
+	rbac.ActionGet:           true,
+	rbac.ActionCreate:        true,
+	rbac.ActionUpdate:        true,
+	rbac.ActionDelete:        true,
+	rbac.ActionSync:          true,
+	rbac.ActionOverride:      true,
+	rbac.ActionSetSyncPolicy: true,
+	"*":                      true,
 }
 
 var validActionPatterns = []*regexp.Regexp{
