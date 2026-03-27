@@ -75,6 +75,12 @@ const (
 	// EnvClusterCacheEventsProcessingInterval is the env variable to control the interval between processing events when BatchEventsProcessing is enabled
 	EnvClusterCacheEventsProcessingInterval = "ARGOCD_CLUSTER_CACHE_EVENTS_PROCESSING_INTERVAL"
 
+	// EnvClusterCacheWatchList enables watch-list (sendInitialEvents) for
+	// initial cluster cache sync. Requires the WatchList feature gate on the
+	// target apiserver (GA in k8s 1.32). Falls back to LIST per cluster if
+	// the apiserver rejects the request.
+	EnvClusterCacheWatchList = "ARGOCD_CLUSTER_CACHE_WATCH_LIST"
+
 	// AnnotationIgnoreResourceUpdates when set to true on an untracked resource,
 	// argo will apply `ignoreResourceUpdates` configuration on it.
 	AnnotationIgnoreResourceUpdates = "argocd.argoproj.io/ignore-resource-updates"
@@ -115,6 +121,9 @@ var (
 
 	// clusterCacheEventsProcessingInterval specifies the interval between processing events when BatchEventsProcessing is enabled
 	clusterCacheEventsProcessingInterval = 100 * time.Millisecond
+
+	// clusterCacheWatchList specifies whether to use watch-list for initial sync
+	clusterCacheWatchList = false
 )
 
 func init() {
@@ -128,6 +137,7 @@ func init() {
 	clusterCacheRetryUseBackoff = env.ParseBoolFromEnv(EnvClusterCacheRetryUseBackoff, false)
 	clusterCacheBatchEventsProcessing = env.ParseBoolFromEnv(EnvClusterCacheBatchEventsProcessing, true)
 	clusterCacheEventsProcessingInterval = env.ParseDurationFromEnv(EnvClusterCacheEventsProcessingInterval, clusterCacheEventsProcessingInterval, 0, math.MaxInt64)
+	clusterCacheWatchList = env.ParseBoolFromEnv(EnvClusterCacheWatchList, clusterCacheWatchList)
 }
 
 type LiveStateCache interface {
@@ -587,6 +597,7 @@ func (c *liveStateCache) getCluster(cluster *appv1.Cluster) (clustercache.Cluste
 		clustercache.SetRespectRBAC(respectRBAC),
 		clustercache.SetBatchEventsProcessing(clusterCacheBatchEventsProcessing),
 		clustercache.SetEventProcessingInterval(clusterCacheEventsProcessingInterval),
+		clustercache.SetWatchList(clusterCacheWatchList),
 	}
 
 	clusterCache = clustercache.NewClusterCache(clusterCacheConfig, clusterCacheOpts...)

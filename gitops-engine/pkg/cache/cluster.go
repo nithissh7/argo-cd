@@ -26,10 +26,12 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -55,10 +57,16 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2/textlogger"
 	"k8s.io/kubectl/pkg/util/openapi"
+	"k8s.io/utils/ptr"
 
 	"github.com/argoproj/gitops-engine/pkg/utils/kube"
 	"github.com/argoproj/gitops-engine/pkg/utils/tracing"
 )
+
+// errWatchListUnsupported signals that the apiserver rejected a
+// sendInitialEvents watch request and the caller should fall back
+// to a LIST-based sync.
+var errWatchListUnsupported = errors.New("apiserver does not support watch-list (sendInitialEvents)")
 
 const (
 	watchResourcesRetryTimeout = 1 * time.Second
@@ -284,6 +292,17 @@ type clusterCache struct {
 	// Maps any resource's UID to its direct children's ResourceKeys
 	// Eliminates need for O(n) graph building during hierarchy traversal
 	parentUIDToChildren map[types.UID][]kube.ResourceKey
+
+	// watchListEnabled opts this cache into using watch-list
+	// (sendInitialEvents) for initial state sync instead of LIST. Requires
+	// the WatchList feature gate on the apiserver (GA in k8s 1.32).
+	watchListEnabled bool
+	// watchListUnsupported latches to true after the first sendInitialEvents
+	// watch is rejected by the apiserver, so subsequent syncs skip straight
+	// to the LIST-based path. This avoids a 400 round-trip per group/kind
+	// on clusters where watchListEnabled is set but the feature gate is
+	// disabled server-side.
+	watchListUnsupported atomic.Bool
 }
 
 type clusterCacheSync struct {
@@ -705,6 +724,138 @@ func runSynced(lock sync.Locker, action func() error) error {
 	return action()
 }
 
+// watchListResources loads the initial state of a resource kind using a
+// watch request with sendInitialEvents=true (KEP-3157) instead of a LIST.
+// This is served from the apiserver's watch cache (no etcd round-trip) and
+// delivers objects as a stream of ADDED events terminated by a bookmark,
+// avoiding the single oversized response body that a ResourceVersion=0 LIST
+// produces on clusters with many objects of one kind.
+//
+// Returns errWatchListUnsupported if the apiserver rejects the request
+// because the WatchList feature gate is disabled (k8s <1.32 by default).
+// Callers should fall back to listResources on that error.
+func (c *clusterCache) watchListResources(ctx context.Context, resClient dynamic.ResourceInterface, callback func(*unstructured.Unstructured) error) (string, error) {
+	if err := c.listSemaphore.Acquire(ctx, 1); err != nil {
+		return "", fmt.Errorf("failed to acquire list semaphore: %w", err)
+	}
+	defer c.listSemaphore.Release(1)
+
+	// Bound the initial-state stream so a slow or stalled apiserver does not
+	// tie up a watch slot indefinitely. Reuse the watch resync timeout as the
+	// upper bound, matching the behaviour of the subsequent long-running watch.
+	timeoutSeconds := int64(c.watchResyncTimeout.Seconds())
+	opts := metav1.ListOptions{
+		SendInitialEvents:    ptr.To(true),
+		ResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
+		AllowWatchBookmarks:  true,
+		TimeoutSeconds:       &timeoutSeconds,
+	}
+
+	var listRetry wait.Backoff
+	if c.listRetryUseBackoff {
+		listRetry = retry.DefaultBackoff
+	} else {
+		listRetry = retry.DefaultRetry
+	}
+	listRetry.Steps = int(c.listRetryLimit)
+
+	retryable := func(err error) bool {
+		// BadRequest/Invalid means the feature gate is off server-side; no
+		// point retrying, let the caller fall back to LIST immediately.
+		if apierrors.IsBadRequest(err) || apierrors.IsInvalid(err) {
+			return false
+		}
+		return c.listRetryFunc(err)
+	}
+
+	var w watch.Interface
+	var retryCount int64
+	err := retry.OnError(listRetry, retryable, func() error {
+		var ierr error
+		w, ierr = resClient.Watch(ctx, opts)
+		if ierr != nil && c.listRetryLimit > 1 && retryable(ierr) {
+			retryCount++
+			c.log.Info(fmt.Sprintf("Error starting watch-list: %v (try %d/%d)", ierr, retryCount, c.listRetryLimit))
+		}
+		//nolint:wrapcheck // wrap outside the retry
+		return ierr
+	})
+	if err != nil {
+		if apierrors.IsBadRequest(err) || apierrors.IsInvalid(err) {
+			return "", fmt.Errorf("%w: %v", errWatchListUnsupported, err)
+		}
+		return "", fmt.Errorf("failed to start watch-list: %w", err)
+	}
+	defer w.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case event, ok := <-w.ResultChan():
+			if !ok {
+				return "", errors.New("watch-list stream closed before initial-events-end bookmark")
+			}
+			switch event.Type {
+			case watch.Error:
+				status := apierrors.FromObject(event.Object)
+				if apierrors.IsBadRequest(status) || apierrors.IsInvalid(status) {
+					return "", fmt.Errorf("%w: %v", errWatchListUnsupported, status)
+				}
+				return "", fmt.Errorf("watch-list received error event: %w", status)
+			case watch.Bookmark:
+				obj, ok := event.Object.(*unstructured.Unstructured)
+				if !ok {
+					return "", fmt.Errorf("watch-list bookmark has unexpected type %T", event.Object)
+				}
+				if obj.GetAnnotations()[metav1.InitialEventsAnnotationKey] == "true" {
+					return obj.GetResourceVersion(), nil
+				}
+			case watch.Added, watch.Modified:
+				obj, ok := event.Object.(*unstructured.Unstructured)
+				if !ok {
+					return "", fmt.Errorf("watch-list event object has unexpected type %T", event.Object)
+				}
+				if err := callback(obj); err != nil {
+					return "", err
+				}
+			case watch.Deleted:
+				// Deletion events before the end-of-initial-state bookmark are
+				// not expected; ignore rather than fail so a race between the
+				// snapshot and a concurrent delete does not abort the sync.
+			}
+		}
+	}
+}
+
+// eachResourceWithFallback streams the current state of a resource kind,
+// preferring watch-list (sendInitialEvents) and falling back to a
+// ResourceVersion=0 LIST if the apiserver rejects watch-list. The per-cluster
+// watchListUnsupported flag makes the fallback sticky so clusters without the
+// feature gate take at most one rejected watch round-trip.
+func (c *clusterCache) eachResourceWithFallback(ctx context.Context, resClient dynamic.ResourceInterface, callback func(*unstructured.Unstructured) error) (string, error) {
+	if c.watchListEnabled && !c.watchListUnsupported.Load() {
+		rv, err := c.watchListResources(ctx, resClient, callback)
+		if err == nil {
+			return rv, nil
+		}
+		if !errors.Is(err, errWatchListUnsupported) {
+			return "", err
+		}
+		c.watchListUnsupported.Store(true)
+		c.log.Info("watch-list unsupported by apiserver, falling back to LIST for remaining kinds", "host", c.config.Host, "error", err)
+	}
+	return c.listResources(ctx, resClient, func(listPager *pager.ListPager) error {
+		return listPager.EachListItem(ctx, metav1.ListOptions{}, func(obj runtime.Object) error {
+			un, ok := obj.(*unstructured.Unstructured)
+			if !ok {
+				return fmt.Errorf("watch-list fallback received unexpected object type %T", obj)
+			}
+			return callback(un)
+		})
+	})
+}
+
 // listResources creates list pager and enforces number of concurrent list requests
 // The callback should not wait on any locks that may be held by other callers.
 func (c *clusterCache) listResources(ctx context.Context, resClient dynamic.ResourceInterface, callback func(*pager.ListPager) error) (string, error) {
@@ -763,15 +914,9 @@ func (c *clusterCache) listResources(ctx context.Context, resClient dynamic.Reso
 // loadInitialState loads the state of all the resources retrieved by the given resource client.
 func (c *clusterCache) loadInitialState(ctx context.Context, api kube.APIResourceInfo, resClient dynamic.ResourceInterface, ns string, lock bool) (string, error) {
 	var items []*Resource
-	resourceVersion, err := c.listResources(ctx, resClient, func(listPager *pager.ListPager) error {
-		return listPager.EachListItem(ctx, metav1.ListOptions{}, func(obj runtime.Object) error {
-			if un, ok := obj.(*unstructured.Unstructured); !ok {
-				return fmt.Errorf("object %s/%s has an unexpected type", un.GroupVersionKind().String(), un.GetName())
-			} else {
-				items = append(items, c.newResource(un))
-			}
-			return nil
-		})
+	resourceVersion, err := c.eachResourceWithFallback(ctx, resClient, func(un *unstructured.Unstructured) error {
+		items = append(items, c.newResource(un))
+		return nil
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to load initial state of resource %s: %w", api.GroupKind.String(), err)
@@ -1073,18 +1218,12 @@ func (c *clusterCache) sync() error {
 		lock.Unlock()
 
 		return c.processApi(client, api, func(resClient dynamic.ResourceInterface, ns string) error {
-			resourceVersion, err := c.listResources(ctx, resClient, func(listPager *pager.ListPager) error {
-				return listPager.EachListItem(context.Background(), metav1.ListOptions{}, func(obj runtime.Object) error {
-					if un, ok := obj.(*unstructured.Unstructured); !ok {
-						return fmt.Errorf("object %s/%s has an unexpected type", un.GroupVersionKind().String(), un.GetName())
-					} else {
-						newRes := c.newResource(un)
-						lock.Lock()
-						c.setNode(newRes)
-						lock.Unlock()
-					}
-					return nil
-				})
+			resourceVersion, err := c.eachResourceWithFallback(ctx, resClient, func(un *unstructured.Unstructured) error {
+				newRes := c.newResource(un)
+				lock.Lock()
+				c.setNode(newRes)
+				lock.Unlock()
+				return nil
 			})
 			if err != nil {
 				if c.isRestrictedResource(err) {

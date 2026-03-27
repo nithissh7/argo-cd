@@ -87,6 +87,18 @@ func SetListPageSize(listPageSize int64) UpdateSettingsFunc {
 	}
 }
 
+// SetWatchList enables watch-list (sendInitialEvents) for initial resource
+// state sync. When enabled, the cache opens a watch with sendInitialEvents=true
+// instead of issuing a LIST, which streams objects individually and avoids the
+// single oversized response that a watch-cache LIST produces on large clusters.
+// Requires the WatchList feature gate on the apiserver (GA in k8s 1.32).
+// Falls back to LIST automatically if the apiserver rejects the request.
+func SetWatchList(enabled bool) UpdateSettingsFunc {
+	return func(cache *clusterCache) {
+		cache.watchListEnabled = enabled
+	}
+}
+
 // SetListPageBufferSize sets the number of pages to prefetch for list pager.
 func SetListPageBufferSize(listPageBufferSize int32) UpdateSettingsFunc {
 	return func(cache *clusterCache) {
