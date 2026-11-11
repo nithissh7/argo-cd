@@ -19,29 +19,26 @@ on:
         required: true
         type: string
         description: "The original PR title"
-    secrets:
-      CHERRYPICK_APP_ID:
-        required: true
-      CHERRYPICK_APP_PRIVATE_KEY:
-        required: true
+
+# NOTE: secrets block removed to allow this workflow to run without Anthropic's
+# GitHub App credentials. On the real anthropics/argo-cd repo, this workflow uses
+# a GitHub App token (CHERRYPICK_APP_ID / CHERRYPICK_APP_PRIVATE_KEY) with write
+# access to the repository. We substitute GITHUB_TOKEN for demonstration purposes.
+# The command injection vulnerability is IDENTICAL -- only the token source differs.
 
 jobs:
   cherry-pick:
     name: Cherry Pick to ${{ inputs.version_number }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
-      - name: Generate a token
-        id: generate-token
-        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2.1.1
-        with:
-          app-id: ${{ secrets.CHERRYPICK_APP_ID }}
-          private-key: ${{ secrets.CHERRYPICK_APP_PRIVATE_KEY }}
-
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
-          token: ${{ steps.generate-token.outputs.token }}
+          token: ${{ github.token }}
 
       - name: Configure Git
         run: |
@@ -56,11 +53,11 @@ jobs:
           MERGE_COMMIT="${{ inputs.merge_commit_sha }}"
           TARGET_BRANCH="release-${{ inputs.version_number }}"
 
-          echo "🍒 Cherry-picking commit $MERGE_COMMIT to branch $TARGET_BRANCH"
+          echo "Cherry-picking commit $MERGE_COMMIT to branch $TARGET_BRANCH"
 
           # Check if target branch exists
           if ! git show-ref --verify --quiet "refs/remotes/origin/$TARGET_BRANCH"; then
-            echo "❌ Target branch '$TARGET_BRANCH' does not exist"
+            echo "Target branch '$TARGET_BRANCH' does not exist"
             exit 1
           fi
 
@@ -70,7 +67,7 @@ jobs:
 
           # Perform cherry-pick
           if git cherry-pick -m 1 "$MERGE_COMMIT"; then
-            echo "✅ Cherry-pick successful"
+            echo "Cherry-pick successful"
 
             # Extract Signed-off-by from the cherry-pick commit
             SIGNOFF=$(git log -1 --pretty=format:"%B" | grep -E '^Signed-off-by:' || echo "")
@@ -83,11 +80,18 @@ jobs:
             echo "signoff=$SIGNOFF" >> "$GITHUB_OUTPUT"
             echo "target_branch=$TARGET_BRANCH" >> "$GITHUB_OUTPUT"
           else
-            echo "❌ Cherry-pick failed due to conflicts"
+            echo "Cherry-pick failed due to conflicts"
             git cherry-pick --abort
             exit 1
           fi
 
+      # ---------------------------------------------------------------
+      # VULNERABILITY: The heredoc below is UNQUOTED (<<EOF not <<'EOF').
+      # ${{ steps.cherry-pick.outputs.signoff }} is injected by GitHub
+      # Actions BEFORE bash runs. If the signoff contains $(cmd), bash
+      # expands it. This is IDENTICAL to the Anthropic workflow at:
+      # https://github.com/anthropics/argo-cd/blob/f85ad11b2a2ae5a943f2ed24e3cde00ef23608d0/.github/workflows/cherry-pick-single.yml
+      # ---------------------------------------------------------------
       - name: Create Pull Request
         run: |
           # Create cherry-pick PR
@@ -107,15 +111,15 @@ jobs:
 
           # Comment on original PR
           gh pr comment ${{ inputs.pr_number }} \
-            --body "🍒 Cherry-pick PR created for ${{ inputs.version_number }}: #$(gh pr list --head ${{ steps.cherry-pick.outputs.branch_name }} --json number --jq '.[0].number')"
+            --body "Cherry-pick PR created for ${{ inputs.version_number }}: #$(gh pr list --head ${{ steps.cherry-pick.outputs.branch_name }} --json number --jq '.[0].number')"
         env:
           PR_TITLE: ${{ inputs.pr_title }}
-          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
 
       - name: Comment on failure
         if: failure()
         run: |
           gh pr comment ${{ inputs.pr_number }} \
-            --body "❌ Cherry-pick failed for ${{ inputs.version_number }}. Please check the [workflow logs](https://github.com/argoproj/argo-cd/actions/runs/${{ github.run_id }}) for details."
+            --body "Cherry-pick failed for ${{ inputs.version_number }}. Please check the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
         env:
-          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}

@@ -48,6 +48,4 @@ jobs:
       version_number: ${{ matrix.version }}
       pr_number: ${{ github.event.pull_request.number }}
       pr_title: ${{ github.event.pull_request.title }}
-    secrets:
-      CHERRYPICK_APP_ID: ${{ vars.CHERRYPICK_APP_ID }}
-      CHERRYPICK_APP_PRIVATE_KEY: ${{ secrets.CHERRYPICK_APP_PRIVATE_KEY }}
+    # secrets block removed - using GITHUB_TOKEN in child workflow for PoC
