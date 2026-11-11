@@ -87,3 +87,4 @@ claiming a bounty, and also on how to claim it.
 See the [operator manual security page](docs/operator-manual/security.md) for
 additional information about Argo CD's security features and how to make your
 Argo CD production ready.
+
