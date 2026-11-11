@@ -1,0 +1,99 @@
+name: "ZDH-010 PoC: Cherry-Pick Heredoc Injection"
+
+# This workflow reproduces the EXACT vulnerable pattern from
+# anthropics/argo-cd cherry-pick-single.yml:
+#   https://github.com/anthropics/argo-cd/blob/f85ad11b/
+#     .github/workflows/cherry-pick-single.yml
+#
+# The signoff input simulates ${{ steps.cherry-pick.outputs.signoff }}
+# which comes from: git log -1 --pretty=format:"%B" | grep '^Signed-off-by:'
+# An attacker controls this via their git user.name in the commit.
+#
+# The heredoc is UNQUOTED (<<EOF not <<'EOF'), so bash expands $() inside it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      signoff:
+        description: "Simulated Signed-off-by line (from commit message)"
+        required: true
+        type: string
+        default: 'Signed-off-by: Legit Name <legit@example.com>'
+      pr_number:
+        description: "PR number"
+        required: true
+        type: string
+        default: "42"
+      pr_title:
+        description: "PR title"
+        required: true
+        type: string
+        default: "fix: correct docs typo"
+
+jobs:
+  demonstrate-injection:
+    name: Reproduce cherry-pick heredoc injection
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Show the injected signoff value
+        run: |
+          echo "## Input Values" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "signoff = $SIGNOFF_SAFE" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        env:
+          SIGNOFF_SAFE: ${{ inputs.signoff }}
+
+      # ---------------------------------------------------------------
+      # THIS IS THE VULNERABLE PATTERN - copied verbatim from
+      # anthropics/argo-cd .github/workflows/cherry-pick-single.yml
+      #
+      # The original code:
+      #   BODY=$(cat <<EOF
+      #   Cherry-picked ${PR_TITLE} (#${{ inputs.pr_number }})
+      #
+      #   ${{ steps.cherry-pick.outputs.signoff }}
+      #   EOF
+      #   )
+      #
+      # We substitute inputs.signoff for steps.cherry-pick.outputs.signoff
+      # because both carry the same attacker-controlled Signed-off-by line.
+      # The injection mechanism is IDENTICAL.
+      # ---------------------------------------------------------------
+      - name: "VULNERABLE: Create Pull Request body (unquoted heredoc)"
+        run: |
+          TITLE="${PR_TITLE} (cherry-pick #${{ inputs.pr_number }})"
+          BODY=$(cat <<EOF
+          Cherry-picked ${PR_TITLE} (#${{ inputs.pr_number }})
+
+          ${{ inputs.signoff }}
+          EOF
+          )
+
+          echo "## Heredoc Output (VULNERABLE)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$BODY" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        env:
+          PR_TITLE: ${{ inputs.pr_title }}
+          GH_TOKEN: ${{ github.token }}
+
+      # Safe version for comparison
+      - name: "SAFE: Same body with quoted heredoc"
+        run: |
+          BODY=$(cat <<'SAFEEOF'
+          Cherry-picked (safe version)
+
+          ${{ inputs.signoff }}
+          SAFEEOF
+          )
+
+          echo "## Heredoc Output (SAFE - quoted)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$BODY" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        env:
+          PR_TITLE: ${{ inputs.pr_title }}
